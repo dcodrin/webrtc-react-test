@@ -5368,11 +5368,9 @@
         var iceServers = [];
 
         iceServers.push({
-            url: 'stun:stun.l.google.com:19302'
-        });
-
-        iceServers.push({
-            url: 'stun:stun.anyfirewall.com:3478'
+            url: 'turn:turn.anyfirewall.com:443?transport=tcp',
+            credential: 'webrtc',
+            username: 'webrtc'
         });
 
         iceServers.push({
@@ -5382,10 +5380,16 @@
         });
 
         iceServers.push({
-            url: 'turn:turn.anyfirewall.com:443?transport=tcp',
-            credential: 'webrtc',
-            username: 'webrtc'
+            url: 'stun:stun.l.google.com:19302'
         });
+
+        iceServers.push({
+            url: 'stun:stun.anyfirewall.com:3478'
+        });
+
+
+
+
 
         connection.iceServers = iceServers;
 

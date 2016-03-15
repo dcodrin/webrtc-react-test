@@ -67,7 +67,7 @@
 
 	var _socket2 = _interopRequireDefault(_socket);
 
-	var _RTCMultiConnection = __webpack_require__(210);
+	var _RTCMultiConnection = __webpack_require__(209);
 
 	var _RTCMultiConnection2 = _interopRequireDefault(_RTCMultiConnection);
 
@@ -89,17 +89,64 @@
 
 	        _this.state = {
 	            socket: _socket2.default.connect(),
-	            onMessageCallbacks: {}
+	            onMessageCallbacks: {},
+	            room: ''
 	        };
 
 	        _this.handleClick = _this.handleClick.bind(_this);
+	        _this.initRTCMultiConnection = _this.initRTCMultiConnection.bind(_this);
+	        _this.handleInputChange = _this.handleInputChange.bind(_this);
 	        return _this;
 	    }
 
 	    _createClass(App, [{
-	        key: "componentDidMount",
-	        value: function componentDidMount() {
+	        key: "initRTCMultiConnection",
+	        value: function initRTCMultiConnection(userid) {
+
+	            var that = this;
+
+	            console.log("handleClick fired!");
+	            var connection = new RTCMultiConnection();
+	            console.log(connection, "THIS IS THE CONNECTION CREATED FROM A USER CLICK!");
+	            connection.body = this.refs.videos_container;
+
+	            connection.channel = connection.sessionid = connection.userid = userid || connection.userid;
+
+	            connection.sdpConstraints.mandatory = {
+	                OfferToReceiveAudio: false,
+	                OfferToReceiveVideo: true
+	            };
+
+	            // using socket.io for signaling
+	            connection.openSignalingChannel = function (config) {
+	                var channel = config.channel || this.channel;
+	                that.state.onMessageCallbacks[channel] = config.onmessage;
+	                if (config.onopen) setTimeout(config.onopen, 1000);
+	                return {
+	                    send: function send(message) {
+	                        that.state.socket.emit('message', {
+	                            sender: connection.userid,
+	                            channel: channel,
+	                            message: message
+	                        });
+	                    },
+	                    channel: channel
+	                };
+	            };
+	            connection.onMediaError = function (error) {
+	                alert(JSON.stringify(error));
+	            };
+	            return connection;
+	        }
+	    }, {
+	        key: "handleClick",
+	        value: function handleClick() {
 	            var _this2 = this;
+
+	            var that = this;
+
+	            var connection = this.initRTCMultiConnection();
+	            connection.getExternalIceServers = false;
 
 	            this.state.socket.on('message', function (data) {
 	                if (data.sender === connection.userid) return;
@@ -107,16 +154,104 @@
 	                    _this2.state.onMessageCallbacks[data.channel](data.message);
 	                }
 	            });
+
+	            connection.onstream = function (event) {
+	                connection.body.appendChild(event.mediaElement);
+
+	                if (connection.isInitiator == false && !connection.broadcastingConnection) {
+	                    // "connection.broadcastingConnection" global-level object is used
+	                    // instead of using a closure object, i.e. "privateConnection"
+	                    // because sometimes out of browser-specific bugs, browser
+	                    // can emit "onaddstream" event even if remote user didn't attach any stream.
+	                    // such bugs happen often in chrome.
+	                    // "connection.broadcastingConnection" prevents multiple initializations.
+
+	                    // if current user is broadcast viewer
+	                    // he should create a separate RTCMultiConnection object as well.
+	                    // because node.js server can allot him other viewers for
+	                    // remote-stream-broadcasting.
+	                    connection.broadcastingConnection = that.initRTCMultiConnection(connection.userid);
+
+	                    // to fix unexpected chrome/firefox bugs out of sendrecv/sendonly/etc. issues.
+	                    connection.broadcastingConnection.onstream = function () {};
+
+	                    connection.broadcastingConnection.session = connection.session;
+	                    connection.broadcastingConnection.attachStreams.push(event.stream); // broadcast remote stream
+	                    connection.broadcastingConnection.dontCaptureUserMedia = true;
+
+	                    // forwarder should always use this!
+	                    connection.broadcastingConnection.sdpConstraints.mandatory = {
+	                        OfferToReceiveVideo: false,
+	                        OfferToReceiveAudio: false
+	                    };
+
+	                    connection.broadcastingConnection.open({
+	                        dontTransmit: true
+	                    });
+	                }
+	            };
+
+	            var broadcastid = this.refs.broadcast_id.value;
+
+	            if (broadcastid.replace(/^\s+|\s+$/g, '').length <= 0) {
+	                alert('Please enter broadcast-id');
+	                this.refs.broadcast_id.focus();
+	                return;
+	            }
+
+	            connection.session = {
+	                video: this.refs.broadcast_options.value.indexOf('Video') !== -1,
+	                screen: this.refs.broadcast_options.value.indexOf('Screen') !== -1,
+	                audio: this.refs.broadcast_options.value.indexOf('Audio') !== -1,
+	                oneway: true
+	            };
+
+	            this.state.socket.emit('join-broadcast', {
+	                broadcastid: broadcastid,
+	                userid: connection.userid,
+	                typeOfStreams: connection.session
+	            });
+
+	            this.state.socket.on('join-broadcaster', function (broadcaster, typeOfStreams) {
+	                connection.session = typeOfStreams;
+	                connection.channel = connection.sessionid = broadcaster.userid;
+
+	                connection.sdpConstraints.mandatory = {
+	                    OfferToReceiveVideo: !!connection.session.video,
+	                    OfferToReceiveAudio: !!connection.session.audio
+	                };
+
+	                connection.join({
+	                    sessionid: broadcaster.userid,
+	                    userid: broadcaster.userid,
+	                    extra: {},
+	                    session: connection.session
+	                });
+	            });
+
+	            // this event is emitted when a broadcast is absent.
+	            this.state.socket.on('start-broadcasting', function (typeOfStreams) {
+	                // host i.e. sender should always use this!
+	                connection.sdpConstraints.mandatory = {
+	                    OfferToReceiveVideo: false,
+	                    OfferToReceiveAudio: false
+	                };
+	                connection.session = typeOfStreams;
+	                connection.open({
+	                    dontTransmit: true
+	                });
+
+	                if (connection.broadcastingConnection) {
+	                    // if new person is given the initiation/host/moderation control
+	                    connection.broadcastingConnection.close();
+	                    connection.broadcastingConnection = null;
+	                }
+	            });
 	        }
 	    }, {
-	        key: "handleClick",
-	        value: function handleClick() {
-
-	            console.log("handleClick fired!");
-	            var connection = new RTCMultiConnection();
-	            console.log(connection, "THIS IS THE CONNECTION CREATED FROM A USER CLICK!");
-
-	            connection.body = this.refs.videos_container;
+	        key: "handleInputChange",
+	        value: function handleInputChange(e) {
+	            this.setState({ room: e.target.value });
 	        }
 	    }, {
 	        key: "render",
@@ -125,10 +260,10 @@
 	                "div",
 	                null,
 	                _react2.default.createElement("div", { ref: "videos_container" }),
-	                _react2.default.createElement("input", { type: "text", id: "broadcast-id", placeholder: "broadcast-id", defaultValue: "room-xyz" }),
+	                _react2.default.createElement("input", { onChange: this.handleInputChange, type: "text", ref: "broadcast_id", placeholder: "broadcast-id", value: this.state.room }),
 	                _react2.default.createElement(
 	                    "select",
-	                    { id: "broadcast-options" },
+	                    { ref: "broadcast_options" },
 	                    _react2.default.createElement(
 	                        "option",
 	                        null,
@@ -27215,8 +27350,7 @@
 
 
 /***/ },
-/* 209 */,
-/* 210 */
+/* 209 */
 /***/ function(module, exports) {
 
 	'use strict';var _typeof=typeof Symbol==="function"&&typeof Symbol.iterator==="symbol"?function(obj){return typeof obj;}:function(obj){return obj&&typeof Symbol==="function"&&obj.constructor===Symbol?"symbol":typeof obj;}; // Last time updated at Sep 21, 2015, 08:32:23
@@ -27662,7 +27796,7 @@
 	var config={};config[type]=true;_stopAndRemoveStream(_stream,config);}else _stopAndRemoveStream(_stream,type);}}function _stopAndRemoveStream(_stream,config){ // connection.streams.remove({ remote: true, userid: 'remote-userid' });
 	if(config.userid&&_stream.userid!=config.userid)return;if(config.local&&_stream.type!='local')return;if(config.remote&&_stream.type!='remote')return;if(config.screen&&!!_stream.isScreen){endStream(_stream);}if(config.audio&&!!_stream.isAudio){endStream(_stream);}if(config.video&&!!_stream.isVideo){endStream(_stream);} // connection.streams.remove('local');
 	if(!config.audio&&!config.video&&!config.screen){endStream(_stream);}}function endStream(_stream){onStreamEndedHandler(_stream,connection);delete connection.streams[_stream.streamid];}},selectFirst:function selectFirst(args){return this._selectStreams(args,false);},selectAll:function selectAll(args){return this._selectStreams(args,true);},_selectStreams:function _selectStreams(args,all){if(!args||isString(args)||isEmpty(args))throw 'Invalid arguments.'; // if userid is used then both local/remote shouldn't be auto-set
-	if(isNull(args.local)&&isNull(args.remote)&&isNull(args.userid)){args.local=args.remote=true;}if(!args.isAudio&&!args.isVideo&&!args.isScreen){args.isAudio=args.isVideo=args.isScreen=true;}var selectedStreams=[];for(var stream in this){if(connection._skip.indexOf(stream)==-1&&(stream=this[stream])&&(args.local&&stream.type=='local'||args.remote&&stream.type=='remote'||args.userid&&stream.userid==args.userid)){if(args.isVideo&&stream.isVideo){selectedStreams.push(stream);}if(args.isAudio&&stream.isAudio){selectedStreams.push(stream);}if(args.isScreen&&stream.isScreen){selectedStreams.push(stream);}}}return !!all?selectedStreams:selectedStreams[0];}};var iceServers=[];iceServers.push({url:'stun:stun.l.google.com:19302'});iceServers.push({url:'stun:stun.anyfirewall.com:3478'});iceServers.push({url:'turn:turn.bistri.com:80',credential:'homeo',username:'homeo'});iceServers.push({url:'turn:turn.anyfirewall.com:443?transport=tcp',credential:'webrtc',username:'webrtc'});connection.iceServers=iceServers;connection.rtcConfiguration={iceServers:null,iceTransports:'all', // none || relay || all - ref: http://goo.gl/40I39K
+	if(isNull(args.local)&&isNull(args.remote)&&isNull(args.userid)){args.local=args.remote=true;}if(!args.isAudio&&!args.isVideo&&!args.isScreen){args.isAudio=args.isVideo=args.isScreen=true;}var selectedStreams=[];for(var stream in this){if(connection._skip.indexOf(stream)==-1&&(stream=this[stream])&&(args.local&&stream.type=='local'||args.remote&&stream.type=='remote'||args.userid&&stream.userid==args.userid)){if(args.isVideo&&stream.isVideo){selectedStreams.push(stream);}if(args.isAudio&&stream.isAudio){selectedStreams.push(stream);}if(args.isScreen&&stream.isScreen){selectedStreams.push(stream);}}}return !!all?selectedStreams:selectedStreams[0];}};var iceServers=[];iceServers.push({url:'turn:turn.anyfirewall.com:443?transport=tcp',credential:'webrtc',username:'webrtc'});iceServers.push({url:'turn:turn.bistri.com:80',credential:'homeo',username:'homeo'});iceServers.push({url:'stun:stun.l.google.com:19302'});iceServers.push({url:'stun:stun.anyfirewall.com:3478'});connection.iceServers=iceServers;connection.rtcConfiguration={iceServers:null,iceTransports:'all', // none || relay || all - ref: http://goo.gl/40I39K
 	peerIdentity:false}; // www.RTCMultiConnection.org/docs/media/
 	connection.media={min:function min(width,height){if(!connection.mediaConstraints.video)return;if(!connection.mediaConstraints.video.mandatory){connection.mediaConstraints.video.mandatory={};}connection.mediaConstraints.video.mandatory.minWidth=width;connection.mediaConstraints.video.mandatory.minHeight=height;},max:function max(width,height){if(!connection.mediaConstraints.video)return;if(!connection.mediaConstraints.video.mandatory){connection.mediaConstraints.video.mandatory={};}connection.mediaConstraints.video.mandatory.maxWidth=width;connection.mediaConstraints.video.mandatory.maxHeight=height;}};connection._getStream=function(event){var resultingObject=merge({sockets:event.socket?[event.socket]:[]},event);resultingObject.stop=function(){var self=this;self.sockets.forEach(function(socket){if(self.type=='local'){socket.send({streamid:self.streamid,stopped:true});}if(self.type=='remote'){socket.send({promptStreamStop:true,streamid:self.streamid});}});if(self.type=='remote')return;var stream=self.stream;if(stream)self.rtcMultiConnection.stopMediaStream(stream);};resultingObject.mute=function(session){this.muted=true;this._private(session,true);};resultingObject.unmute=function(session){this.muted=false;this._private(session,false);};function muteOrUnmuteLocally(session,isPause,mediaElement){if(!mediaElement)return;var lastPauseState=mediaElement.onpause;var lastPlayState=mediaElement.onplay;mediaElement.onpause=mediaElement.onplay=function(){};if(isPause)mediaElement.pause();else mediaElement.play();mediaElement.onpause=lastPauseState;mediaElement.onplay=lastPlayState;}resultingObject._private=function(session,enabled){if(session&&!isNull(session.sync)&&session.sync==false){muteOrUnmuteLocally(session,enabled,this.mediaElement);return;}muteOrUnmute({root:this,session:session,enabled:enabled,stream:this.stream});};resultingObject.startRecording=function(session){var self=this;if(!session){session={audio:true,video:true};}if(isString(session)){session={audio:session=='audio',video:session=='video'};}if(!window.RecordRTC){return loadScript(self.rtcMultiConnection.resources.RecordRTC,function(){self.startRecording(session);});}log('started recording session',session);self.videoRecorder=self.audioRecorder=null;if(isFirefox){ // firefox supports both audio/video recording in single webm file
 	if(session.video){self.videoRecorder=RecordRTC(self.stream,{type:'video'});}else if(session.audio){self.audioRecorder=RecordRTC(self.stream,{type:'audio'});}}else if(isChrome){ // chrome supports recording in two separate files: WAV and WebM
